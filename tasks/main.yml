@@ -1,0 +1,121 @@
+---
+- name: check zabbix agent is installed
+  stat:
+    path: /etc/zabbix/
+  register: zabbix_agent
+  tags:
+  - zabbixstatusprobe
+
+- name: ensure zabbix sender is installed
+  yum:
+    name: zabbix-sender
+    state: present
+    enablerepo: zabbix
+  become: yes
+  tags:
+  - zabbixstatusprobe
+
+# Old version that needs cleaning up
+- name: Remove pyzabbix rpm
+  yum:
+    name: python-pyzabbix
+    state: absent
+  become: yes
+  tags:
+  - zabbixstatusprobe
+
+# Old version that needs cleaning up
+- name: install pyzabbix
+  pip:
+    name: py-zabbix
+    state: absent
+  become: yes
+  tags:
+  - zabbixstatusprobe
+
+# Correct version
+- name: remove py-zabbix
+  pip:
+    name: py-zabbix
+    version: 1.1.3
+    state: absent
+  become: yes
+  tags:
+  - zabbixstatusprobe
+
+- name: copy zabbix status probe script
+  template:
+    src: zabbix-probe.py.j2
+    dest: /etc/zabbix/zabbix-probe.py
+    owner: zabbix
+    group: zabbix
+    mode: 0744
+  become: yes
+  tags:
+  - zabbixstatusprobe
+
+- name: copy zabbix status probe script config
+  template:
+    src: zabbix-probe-config.json.j2
+    dest: /etc/zabbix/zabbix-probe-config.json
+    owner: zabbix
+    group: zabbix
+    mode: 0744
+  become: yes
+  tags:
+  - zabbixstatusprobe
+
+- name: ensure tmp file exists
+  copy:
+    content: ""
+    dest: /etc/zabbix/lastZabbixUpdateTime
+    force: no
+    group: zabbix
+    owner: zabbix
+    mode: 0775
+  become: yes
+  tags:
+  - zabbixstatusprobe
+
+- name: ensure /etc/zabbix has correct permissions
+  file:
+    path: /etc/zabbix
+    mode: 0755
+  become: yes
+  tags:
+  - zabbixstatusprobe
+
+- name: add zabbix user parameter for zabbix status probe
+  lineinfile:
+    path: /etc/zabbix/zabbix_agentd.conf
+    state: absent
+    regexp: '^UserParameter=net.hmcts.reform.probe,/etc/zabbix/zabbix-probe.py'
+    line: 'UserParameter=net.hmcts.reform.probe,/etc/zabbix/zabbix-probe.py'
+  notify: restart zabbix-agent
+  become: yes
+  tags:
+  - zabbixstatusprobe
+
+- name: Execute script to register with Zabbix
+  command: /etc/zabbix/zabbix-probe.py
+  changed_when: False
+  become: yes
+  ignore_errors: yes
+  when: test is not defined
+  no_log: True
+  tags:
+    - zabbixstatusprobe
+
+- name: Disable Cron Email Alerts
+  cron:
+    name: MAILTO
+    env: yes
+    value: ""
+
+- name: Setup cronjob for status-probe
+  cron:
+    job: /etc/zabbix/zabbix-probe.py
+    name: status-probe
+    state: absent
+  tags:
+    - zabbixstatusprobe

@@ -1,0 +1,5 @@
+---
+- name: restart zabbix-agent
+  service: name=zabbix-agent state=restarted
+  become: yes
+  ignore_errors: yes

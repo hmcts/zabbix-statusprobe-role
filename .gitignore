@@ -1,0 +1,6 @@
+.idea
+*.DS_Store
+.molecule
+.vagrant
+.cache
+tests/__pycache__

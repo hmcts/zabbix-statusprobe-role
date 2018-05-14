@@ -1,0 +1,225 @@
+#!/usr/bin/env python
+import sys
+import urllib2
+import json
+import os
+import time
+from pyzabbix import ZabbixAPI
+
+debugMode = False
+
+# Hostname of Agent as registered in Zabbix
+agentHostname = "{{ zabbix_agent_config_hostname }}"
+
+# Prepends Metrics key to ensure uniqueness in Zabbix
+metricsKeyPrefix = ".metrics."
+
+# Prepends Health key to ensure uniqueness in Zabbix
+healthKeyPrefix = ".health."
+
+# Number of milliseconds between Zabbix item update
+updateInterval = 10 * (60 * 1000)
+
+# Days history to keep
+daysHistory = 31
+
+# File to read/write last update time value
+zabbixUpdateFilename = '/etc/zabbix/lastZabbixUpdateTime'
+
+# The base Zabbix CLI command to use (-k and -o values replaced via Python string formatting)
+zabbixBaseCommand = "zabbix_sender -z {{ zabbix_agent_config_server }} -p 10051 -s " + agentHostname + " -k %s -o \"%s\" >/dev/null 2>&1"
+
+
+checkMetricList = []
+
+class ZabbixCheck:
+
+    def __init__(self, app, hostname, type, key, value):
+        self.app = app
+        self.key = key
+        self.value = value
+        self.type = type
+
+def getChecks():
+    try:
+        with open('/etc/zabbix/zabbix-probe-config.json') as check_file:
+            checks = json.load(check_file)
+            return checks
+    except IOError as e:
+        print -1
+        quit()
+
+def getLastUpdateTime():
+    lastUpdateTime = 0
+    try:
+        f = open(zabbixUpdateFilename, 'r')
+        lastUpdateTime = float(f.read())
+        f.close()
+    except IOError as e:
+        pass
+    except ValueError as ve:
+        pass
+    return lastUpdateTime
+
+def writeLastUpdateTime(lastUpdateTime):
+    try:
+        f = open(zabbixUpdateFilename, 'w')
+        f.write(str(lastUpdateTime))
+        f.close()
+    except IOError as e:
+        if debugMode:
+            print e
+        print -2
+        quit()
+    return lastUpdateTime
+
+# Retrieves JSON from a URL
+def get_json(url):
+    jsonData = json.loads('{"status":"This is the default script text for an unknown/empty response. Possibly an SELinux issue with Python if URL is correct"}')
+    try:
+       req = urllib2.Request(url)
+       opener = urllib2.build_opener()
+       f = opener.open(req,timeout=5)
+       try:
+          jsonData = json.loads(f.read())
+       except ValueError as e:
+           jsonData = json.loads('{"status":"'+ e +'"}')
+    except urllib2.HTTPError as e:
+        try:
+            jsonData = json.loads(e.read())
+        except ValueError as e:
+            if debugMode:
+                print e
+    except urllib2.URLError as e:
+        if debugMode:
+            print e
+    return jsonData
+
+# Uses the zabbix_sender command to send data to Zabbix server
+def send_metrics():
+    for check in checkMetricList:
+        send_to_zabbix(check.key, check.value)
+
+def add_metric(app, type, key, value):
+    if 'status' in key:
+        # Normalise value to either 1 or 0 for Zabbix
+        if isinstance(value, basestring):
+            value = value.upper()
+            if value in ['OK', 'UP', 'YES', 'TRUE']:
+                value = 1
+
+    checkMetricList.append(ZabbixCheck(app, agentHostname, type, key, value))
+
+# Parses the health JSON data, looking for key of 'status' at top level or level below for sub-components
+def report_health(app, jsonData):
+    for key in jsonData:
+        value = jsonData.get(key)
+        if key == "status":
+            add_metric(app, key, app + healthKeyPrefix + key, value)
+        else:
+            if isinstance(value, dict):
+                for subKey in value:
+                    componentKey = app + healthKeyPrefix + key
+                    if subKey == "status":
+                        subValue = value.get(subKey)
+                        add_metric(app, key, componentKey + "." + subKey, subValue)
+
+# Parses the metric JSON data (simple Key/Value Map)
+def report_metrics(app, jsonData):
+    for key in jsonData:
+        value = jsonData.get(key)
+        add_metric(app, key, app + metricsKeyPrefix + key, value)
+
+
+def send_to_zabbix(key, value):
+    cmd = zabbixBaseCommand % (key, value)
+    os.system(cmd)
+
+def update_zabbix(checks):
+    zapi = ZabbixAPI('https://{{ zabbix_agent_config_server }}', user='{{ zabbix_api_user }}', password='{{ zabbix_api_user_password }}')
+
+    hostList = zapi.host.get(filter={"host": agentHostname})
+
+    hostId = {}
+
+    if hostList:
+        hostId = hostList[0]['hostid']
+
+    for check in checkMetricList:
+        appName = 'Reform application (' + check.app + ')'
+        applicationId = createApplication(zapi, appName, hostId)
+        existingItem = zapi.item.get(filter={'hostid': hostId, 'key_': check.key})
+
+        if existingItem:
+            itemId = existingItem[0]['itemid']
+            newItem = zapi.item.update(itemid=itemId,
+                                       name='Reform application (' + check.key + ')',
+                                       key_=check.key,
+                                       value_type=4,  # Text
+                                       type=2,  # Trapper
+                                       delay=5,
+                                       applications=[applicationId],
+                                       history=daysHistory)
+        else:
+            newItem = zapi.item.create(hostid=hostId,
+                                       name='Reform application (' + check.key + ')',
+                                       key_=check.key,
+                                       value_type=4,  # Text
+                                       type=2,  # Trapper
+                                       delay=5,
+                                       applications=[applicationId],
+                                       history=daysHistory)
+
+            newTrigger = zapi.trigger.create(description=appName + " status on {HOST.NAME}",
+                                             priority=4,
+                                             expression='{' + agentHostname + ':' + check.key + '.last()}<>1')
+
+            newNoDataTrigger = zapi.trigger.create(description=appName + " no status data received for 120 seconds on {HOST.NAME}",
+                                             priority=2,
+                                             expression='{' + agentHostname + ':' + check.key + '.nodata(120s)}=1')
+
+
+def createApplication(zapi, appName, hostId):
+    applicationList = zapi.application.get(filter={"name": appName, "hostid": hostId})
+
+    applicationId = -99
+    if len(applicationList) == 0:
+        response = zapi.application.create(hostid=hostId, name=appName)
+        if response and len(response) > 0:
+            applicationId = response['applicationids'][0]
+    else:
+        applicationId = applicationList[0]['applicationid']
+    return applicationId
+
+def main(argv):
+
+    checks = getChecks()
+
+    lastUpdateTime = getLastUpdateTime()
+    currentTime = time.time()
+
+    updateZabbix = currentTime - lastUpdateTime > updateInterval
+
+    for check in checks:
+        app = check["app"]
+        uri = check["uri"]
+        type = check["type"]
+
+        jsonData = get_json(uri)
+
+
+        if type == 'metrics':
+            report_metrics(app, jsonData)
+        elif type == 'health':
+            report_health(app, jsonData)
+
+    if updateZabbix:
+        update_zabbix(checks)
+        writeLastUpdateTime(currentTime)
+
+    send_metrics()
+
+    print 1
+
+if __name__ == "__main__":
+    main(sys.argv)

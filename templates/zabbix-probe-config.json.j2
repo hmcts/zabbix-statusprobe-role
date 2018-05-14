@@ -1,0 +1,1 @@
+[{% for check in zabbix_probe_checks %}{ "app" : "{{ check.app }}", "type" : "{{ check.type }}", "uri": "{{ check.uri }}" }{% if not loop.last %},{% endif %}{% endfor %}]

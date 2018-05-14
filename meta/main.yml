@@ -1,0 +1,13 @@
+galaxy_info:
+  author: HMCTS Reform programme
+  description: Adds Status probe for monitoring application status endpoints with Zabbix
+  company: HMCTS
+
+  license: MIT
+
+  min_ansible_version: 1.2
+
+  galaxy_tags: []
+
+dependencies:
+  - {role: "devops.repos" }

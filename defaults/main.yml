@@ -1,0 +1,8 @@
+---
+zabbix_agent_config_server: ""
+zabbix_agent_config_hostname: ""
+zabbix_api_user: ""
+zabbix_api_user_password: ""
+metrics_key_prefix: ""
+health_key_prefix: ""
+zabbix_probe_checks: []

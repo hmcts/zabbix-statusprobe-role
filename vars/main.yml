@@ -1,0 +1,7 @@
+---
+# yum and pip packages vars - get passed through to common-role
+yum_packages:
+  - "python-pip"
+
+pip_packages:
+  - "py-zabbix"
